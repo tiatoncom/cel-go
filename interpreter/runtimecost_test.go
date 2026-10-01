@@ -1283,6 +1283,11 @@ func TestCostTrackerStackSteps(t *testing.T) {
 		`l.map(i, i >= 0, i + 1).size() == 0`,
 		`l.exists(i, i < 0 && i % 2 == 0)`,
 		`l.exists(i, [i, i].size() < 0)`,
+		// The first operand fails, so the call does not find the others on the stack.
+		`l.exists(i, i / 0 > i)`,
+		`l.filter(i, i / 0 > i).size() == 0`,
+		`l.exists(i, string(i / 0) == string(i))`,
+		`l.exists(i, [i / 0, i].size() > 0)`,
 	}
 	// Each iteration leaves two entries, so the stack grows far beyond the size at which it is indexed.
 	const n = 4 * refValStackIndexSize
