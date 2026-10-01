@@ -971,7 +971,8 @@ func CrossTypeNumericComparisons(enabled bool) EnvOption {
 // CheckerMaxTypeSize sets checker.MaxTypeSize on the environment: a bound on the unfolded
 // size of a type the type-checker builds, in nodes of the tree the type stands for. A type
 // that would carry the count over n is not built; the expression reports one issue and its
-// node takes the error type. n <= 0 disables the bound, which is the default.
+// node takes the error type. n == 0 disables the bound, which is the default; a negative n
+// is an error of the environment.
 func CheckerMaxTypeSize(n int) EnvOption {
 	return func(e *Env) (*Env, error) {
 		e.chkOpts = append(e.chkOpts, checker.MaxTypeSize(n))
