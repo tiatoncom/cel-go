@@ -348,12 +348,81 @@ type stackVal struct {
 	ID  int64
 }
 
-// refValStack keeps track of values of the stack for cost calculation purposes
-type refValStack []stackVal
+// refValStackIndexSize is the number of entries at which refValStack starts to index its entries.
+const refValStackIndexSize = 256
+
+// refValStack keeps track of values of the stack for cost calculation purposes.
+//
+// Looking up an ID which is not on the stack takes a pass over the whole stack, and each iteration
+// of a comprehension leaves entries on the stack until the loop ends. Once the stack holds
+// refValStackIndexSize entries, top maps each ID to the index of its topmost entry so that a lookup
+// no longer depends on the size of the stack. A stack which has been indexed stays indexed.
+type refValStack struct {
+	vals []stackVal
+	top  map[int64]int
+	// prev[i] is the index of the next entry down with the same ID as vals[i], or -1. It is kept
+	// while the stack is indexed.
+	prev []int
+
+	// steps counts the entries which are examined or removed to find and drop IDs, for tests.
+	steps int
+}
 
 func (s *refValStack) push(val ref.Val, id int64) {
-	value := stackVal{Val: val, ID: id}
-	*s = append(*s, value)
+	s.vals = append(s.vals, stackVal{Val: val, ID: id})
+	if s.top != nil {
+		s.index(len(s.vals) - 1)
+	} else if len(s.vals) >= refValStackIndexSize {
+		s.top = make(map[int64]int, len(s.vals))
+		s.prev = make([]int, 0, 2*len(s.vals))
+		for i := range s.vals {
+			s.index(i)
+		}
+	}
+}
+
+// index records the entry at idx, which is the next one to be indexed, as the topmost entry with
+// its ID.
+func (s *refValStack) index(idx int) {
+	id := s.vals[idx].ID
+	prev, ok := s.top[id]
+	if !ok {
+		prev = -1
+	}
+	s.prev = append(s.prev, prev)
+	s.top[id] = idx
+}
+
+// find returns the index of the topmost entry with the given ID.
+func (s *refValStack) find(id int64) (int, bool) {
+	if s.top != nil {
+		s.steps++
+		idx, ok := s.top[id]
+		return idx, ok
+	}
+	for idx := len(s.vals) - 1; idx >= 0; idx-- {
+		s.steps++
+		if s.vals[idx].ID == id {
+			return idx, true
+		}
+	}
+	return 0, false
+}
+
+// truncate removes the entry at idx and all the entries above it.
+func (s *refValStack) truncate(idx int) {
+	if s.top != nil {
+		for i := len(s.vals) - 1; i >= idx; i-- {
+			s.steps++
+			if prev := s.prev[i]; prev >= 0 {
+				s.top[s.vals[i].ID] = prev
+			} else {
+				delete(s.top, s.vals[i].ID)
+			}
+		}
+		s.prev = s.prev[:idx]
+	}
+	s.vals = s.vals[:idx]
 }
 
 // TODO: Allowing drop and dropArgs to remove stack items above the IDs they are provided is a workaround. drop and dropArgs
@@ -365,11 +434,8 @@ func (s *refValStack) push(val ref.Val, id int64) {
 // possible that a dropped ID will remain on the stack.  They should be removed when IDs on the stack are popped.
 func (s *refValStack) drop(ids ...int64) {
 	for _, id := range ids {
-		for idx := len(*s) - 1; idx >= 0; idx-- {
-			if (*s)[idx].ID == id {
-				*s = (*s)[:idx]
-				break
-			}
+		if idx, found := s.find(id); found {
+			s.truncate(idx)
 		}
 	}
 }
@@ -382,17 +448,13 @@ func (s *refValStack) drop(ids ...int64) {
 // possible that a dropped ID will remain on the stack.  They should be removed when IDs on the stack are popped.
 func (s *refValStack) dropArgs(args []InterpretableV2) ([]ref.Val, bool) {
 	result := make([]ref.Val, len(args))
-argloop:
 	for nIdx := len(args) - 1; nIdx >= 0; nIdx-- {
-		for idx := len(*s) - 1; idx >= 0; idx-- {
-			if (*s)[idx].ID == args[nIdx].ID() {
-				el := (*s)[idx]
-				*s = (*s)[:idx]
-				result[nIdx] = el.Val
-				continue argloop
-			}
+		idx, found := s.find(args[nIdx].ID())
+		if !found {
+			return nil, false
 		}
-		return nil, false
+		result[nIdx] = s.vals[idx].Val
+		s.truncate(idx)
 	}
 	return result, true
 }

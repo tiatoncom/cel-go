@@ -19,6 +19,7 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -903,4 +904,443 @@ func TestRuntimeCost(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRefValStackDrop(t *testing.T) {
+	tests := []struct {
+		name string
+		ids  []int64
+		drop []int64
+		want []int64
+	}{
+		{
+			name: "found",
+			ids:  []int64{1, 2, 3},
+			drop: []int64{2},
+			want: []int64{1},
+		},
+		{
+			name: "not found",
+			ids:  []int64{1, 2, 3},
+			drop: []int64{4},
+			want: []int64{1, 2, 3},
+		},
+		{
+			name: "empty",
+			drop: []int64{1},
+		},
+		{
+			name: "topmost of repeated ids",
+			ids:  []int64{1, 2, 1, 3},
+			drop: []int64{1},
+			want: []int64{1, 2},
+		},
+		{
+			name: "repeated ids one by one",
+			ids:  []int64{1, 2, 1, 3},
+			drop: []int64{1, 1},
+		},
+		{
+			name: "repeated id past the top",
+			ids:  []int64{1, 2, 1, 3},
+			drop: []int64{2, 1},
+		},
+		{
+			name: "ids in order",
+			ids:  []int64{1, 2, 3, 4},
+			drop: []int64{4, 2},
+			want: []int64{1},
+		},
+		{
+			name: "ids out of order",
+			ids:  []int64{1, 2, 3, 4},
+			drop: []int64{2, 4},
+			want: []int64{1},
+		},
+		{
+			name: "missing id between found ids",
+			ids:  []int64{1, 2, 3, 4},
+			drop: []int64{3, 5, 2},
+			want: []int64{1},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, indexed := range []bool{false, true} {
+				s := newTestRefValStack(indexed, tc.ids...)
+				s.drop(tc.drop...)
+				if got := refValStackIDs(s); !slices.Equal(got, tc.want) {
+					t.Errorf("drop(%v) with index %v got %v, wanted %v", tc.drop, indexed, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestRefValStackDropArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		ids      []int64
+		args     []int64
+		want     []int64
+		wantVals []ref.Val
+		wantOK   bool
+	}{
+		{
+			name:     "found",
+			ids:      []int64{1, 2, 3},
+			args:     []int64{1, 2},
+			want:     []int64{},
+			wantVals: []ref.Val{types.Int(0), types.Int(1)},
+			wantOK:   true,
+		},
+		{
+			name:     "above the args",
+			ids:      []int64{1, 2, 3, 4},
+			args:     []int64{2},
+			want:     []int64{1},
+			wantVals: []ref.Val{types.Int(1)},
+			wantOK:   true,
+		},
+		{
+			name:     "no args",
+			ids:      []int64{1, 2},
+			want:     []int64{1, 2},
+			wantVals: []ref.Val{},
+			wantOK:   true,
+		},
+		{
+			name:     "topmost of repeated ids",
+			ids:      []int64{1, 2, 1, 3},
+			args:     []int64{2, 1},
+			want:     []int64{1},
+			wantVals: []ref.Val{types.Int(1), types.Int(2)},
+			wantOK:   true,
+		},
+		{
+			name:     "repeated args",
+			ids:      []int64{1, 2, 1, 3},
+			args:     []int64{1, 1},
+			want:     []int64{},
+			wantVals: []ref.Val{types.Int(0), types.Int(2)},
+			wantOK:   true,
+		},
+		{
+			name:   "not found",
+			ids:    []int64{1, 2, 3},
+			args:   []int64{4},
+			want:   []int64{1, 2, 3},
+			wantOK: false,
+		},
+		{
+			name:   "last arg removed before the missing one",
+			ids:    []int64{1, 2, 3, 4},
+			args:   []int64{1, 5, 3},
+			want:   []int64{1, 2},
+			wantOK: false,
+		},
+		{
+			name:   "args out of order",
+			ids:    []int64{1, 2, 3},
+			args:   []int64{2, 1},
+			want:   []int64{},
+			wantOK: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args := make([]InterpretableV2, len(tc.args))
+			for i, id := range tc.args {
+				args[i] = NewConstValue(id, types.NullValue)
+			}
+			for _, indexed := range []bool{false, true} {
+				s := newTestRefValStack(indexed, tc.ids...)
+				vals, ok := s.dropArgs(args)
+				if ok != tc.wantOK {
+					t.Errorf("dropArgs(%v) with index %v got ok %v, wanted %v", tc.args, indexed, ok, tc.wantOK)
+				}
+				if !reflect.DeepEqual(vals, tc.wantVals) {
+					t.Errorf("dropArgs(%v) with index %v got values %v, wanted %v", tc.args, indexed, vals, tc.wantVals)
+				}
+				if got := refValStackIDs(s); !slices.Equal(got, tc.want) {
+					t.Errorf("dropArgs(%v) with index %v left %v, wanted %v", tc.args, indexed, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestRefValStackPushAfterDrop(t *testing.T) {
+	for _, indexed := range []bool{false, true} {
+		s := newTestRefValStack(indexed, 1, 2, 3)
+		s.drop(2)
+		s.push(types.Int(3), 2)
+		s.push(types.Int(4), 1)
+		s.push(types.Int(5), 3)
+		if got, want := refValStackIDs(s), []int64{1, 2, 1, 3}; !slices.Equal(got, want) {
+			t.Fatalf("with index %v got %v, wanted %v", indexed, got, want)
+		}
+		s.drop(1)
+		if got, want := refValStackIDs(s), []int64{1, 2}; !slices.Equal(got, want) {
+			t.Fatalf("drop(1) with index %v got %v, wanted %v", indexed, got, want)
+		}
+		s.drop(3)
+		if got, want := refValStackIDs(s), []int64{1, 2}; !slices.Equal(got, want) {
+			t.Fatalf("drop(3) with index %v got %v, wanted %v", indexed, got, want)
+		}
+		s.drop(1)
+		if got := refValStackIDs(s); len(got) != 0 {
+			t.Fatalf("drop(1) with index %v got %v, wanted an empty stack", indexed, got)
+		}
+	}
+}
+
+// TestRefValStackIndexRepeatedIDs indexes a stack whose entries repeat IDs, up to and including
+// the entry which makes the stack indexed.
+func TestRefValStackIndexRepeatedIDs(t *testing.T) {
+	s := &refValStack{}
+	var want []stackVal
+	for i := 0; i < refValStackIndexSize; i++ {
+		id := int64(1 + i%2)
+		if i == refValStackIndexSize-1 {
+			id = 1
+		}
+		if s.top != nil {
+			t.Fatalf("got an index with %d entries, wanted one with %d", len(s.vals), refValStackIndexSize)
+		}
+		s.push(types.Int(i), id)
+		want = append(want, stackVal{Val: types.Int(i), ID: id})
+	}
+	if s.top == nil {
+		t.Fatalf("got no index with %d entries, wanted one", len(s.vals))
+	}
+	check := func(step string) {
+		t.Helper()
+		if err := compareRefValStack(s, want); err != "" {
+			t.Fatalf("%s: %s", step, err)
+		}
+	}
+	check("pushes")
+	for i, ids := range [][]int64{{1}, {1}, {1}, {2}, {2, 1}, {1, 2, 1}} {
+		s.drop(ids...)
+		want = dropFromList(want, ids...)
+		check(fmt.Sprintf("drop(%v) #%d", ids, i))
+	}
+	for i := 0; i < 4; i++ {
+		s.push(types.Int(1000+i), int64(1+i%2))
+		want = append(want, stackVal{Val: types.Int(1000 + i), ID: int64(1 + i%2)})
+	}
+	args := []InterpretableV2{NewConstValue(2, types.NullValue), NewConstValue(1, types.NullValue)}
+	vals, ok := s.dropArgs(args)
+	wantVals, wantOK, rest := dropArgsFromList(want, 2, 1)
+	want = rest
+	if ok != wantOK || !reflect.DeepEqual(vals, wantVals) {
+		t.Fatalf("dropArgs got (%v, %v), wanted (%v, %v)", vals, ok, wantVals, wantOK)
+	}
+	check("dropArgs")
+	s.drop(1)
+	want = dropFromList(want, 1)
+	check("drop(1) at the end")
+}
+
+// TestRefValStackMatchesSearch compares the stack to a search of a plain list of entries for the
+// topmost entry with an ID.
+func TestRefValStackMatchesSearch(t *testing.T) {
+	rnd := rand.New(rand.NewSource(1))
+	s := &refValStack{}
+	var want []stackVal
+	randomIDs := func() []int64 {
+		ids := make([]int64, 1+rnd.Intn(3))
+		for i := range ids {
+			// Some of the IDs are not on the stack.
+			ids[i] = int64(rnd.Intn(10))
+		}
+		return ids
+	}
+	maxLen := 0
+	for step := 0; step < 24000; step++ {
+		// The stack grows for a while, then shrinks.
+		pushes := 18
+		if step%6000 >= 3000 {
+			pushes = 15
+		}
+		switch op := rnd.Intn(20); {
+		case op < pushes:
+			id := int64(rnd.Intn(6))
+			s.push(types.Int(step), id)
+			want = append(want, stackVal{Val: types.Int(step), ID: id})
+		case op < (pushes+20)/2:
+			ids := randomIDs()
+			s.drop(ids...)
+			want = dropFromList(want, ids...)
+		default:
+			ids := randomIDs()
+			args := make([]InterpretableV2, len(ids))
+			for i, id := range ids {
+				args[i] = NewConstValue(id, types.NullValue)
+			}
+			vals, ok := s.dropArgs(args)
+			wantVals, wantOK, rest := dropArgsFromList(want, ids...)
+			want = rest
+			if ok != wantOK || !reflect.DeepEqual(vals, wantVals) {
+				t.Fatalf("step %d: dropArgs(%v) got (%v, %v), wanted (%v, %v)", step, ids, vals, ok, wantVals, wantOK)
+			}
+		}
+		maxLen = max(maxLen, len(want))
+		if err := compareRefValStack(s, want); err != "" {
+			t.Fatalf("step %d: %s", step, err)
+		}
+	}
+	if maxLen < 2*refValStackIndexSize {
+		t.Errorf("the stack grew to %d entries, wanted more than %d to be indexed for a while", maxLen, 2*refValStackIndexSize)
+	}
+}
+
+// dropFromList removes the topmost entry with each ID and the entries above it from a list of
+// entries, which is how the stack looked for the IDs to drop before it was indexed.
+func dropFromList(list []stackVal, ids ...int64) []stackVal {
+	for _, id := range ids {
+		for idx := len(list) - 1; idx >= 0; idx-- {
+			if list[idx].ID == id {
+				list = list[:idx]
+				break
+			}
+		}
+	}
+	return list
+}
+
+// dropArgsFromList is dropFromList for the args of a call, which returns the values of the entries
+// it removes, and false if any of the IDs is not found.
+func dropArgsFromList(list []stackVal, ids ...int64) ([]ref.Val, bool, []stackVal) {
+	vals := make([]ref.Val, len(ids))
+args:
+	for i := len(ids) - 1; i >= 0; i-- {
+		for idx := len(list) - 1; idx >= 0; idx-- {
+			if list[idx].ID == ids[i] {
+				vals[i] = list[idx].Val
+				list = list[:idx]
+				continue args
+			}
+		}
+		return nil, false, list
+	}
+	return vals, true, list
+}
+
+// compareRefValStack returns a description of the difference between the entries of the stack and
+// a list of entries, or an empty string.
+func compareRefValStack(s *refValStack, want []stackVal) string {
+	if len(s.vals) != len(want) {
+		return fmt.Sprintf("got %d entries, wanted %d", len(s.vals), len(want))
+	}
+	for i, el := range want {
+		if s.vals[i] != el {
+			return fmt.Sprintf("got entry %d of %v, wanted %v", i, s.vals[i], el)
+		}
+	}
+	return ""
+}
+
+// newTestRefValStack returns a stack holding an entry for each ID, whose value is the position of
+// the entry in the stack. When indexed is true, the entries lie on top of enough other entries
+// for the stack to be indexed.
+func newTestRefValStack(indexed bool, ids ...int64) *refValStack {
+	s := &refValStack{}
+	if indexed {
+		for i := 0; i < refValStackIndexSize; i++ {
+			s.push(types.Int(-1), int64(1000+i))
+		}
+	}
+	for i, id := range ids {
+		s.push(types.Int(i), id)
+	}
+	return s
+}
+
+// refValStackIDs returns the IDs of the entries of a stack made by newTestRefValStack, but for
+// the ones below them.
+func refValStackIDs(s *refValStack) []int64 {
+	ids := []int64{}
+	for _, el := range s.vals {
+		if el.ID < 1000 {
+			ids = append(ids, el.ID)
+		}
+	}
+	return ids
+}
+
+// TestCostTrackerStackSteps checks that the work of the cost tracker's value stack grows linearly
+// with the number of iterations of a comprehension. The iterations leave entries on the stack until
+// the loop ends, so a search of the whole stack for an ID which is not there makes it quadratic.
+func TestCostTrackerStackSteps(t *testing.T) {
+	tests := []string{
+		`l.exists(i, i < 0)`,
+		`l.all(i, i >= 0)`,
+		`l.exists_one(i, i < 0)`,
+		`l.filter(i, i < 0).size() == 0`,
+		`l.map(i, i + 1).size() == 0`,
+		`l.map(i, i >= 0, i + 1).size() == 0`,
+		`l.exists(i, i < 0 && i % 2 == 0)`,
+		`l.exists(i, [i, i].size() < 0)`,
+	}
+	// Each iteration leaves two entries, so the stack grows far beyond the size at which it is indexed.
+	const n = 4 * refValStackIndexSize
+	for _, expr := range tests {
+		t.Run(expr, func(t *testing.T) {
+			small := costTrackerSteps(t, expr, n)
+			large := costTrackerSteps(t, expr, 10*n)
+			// Ten times the iterations should take ten times the steps. Allow for the setup and
+			// teardown of the loop.
+			if small == 0 || large > 11*small {
+				t.Errorf("got %d steps for %d elements and %d steps for %d elements, wanted a linear growth",
+					small, n, large, 10*n)
+			}
+		})
+	}
+}
+
+// costTrackerSteps evaluates expr over a list `l` of n integers and returns the number of stack
+// entries the cost tracker looked up or removed.
+func costTrackerSteps(t *testing.T, expr string, n int) int {
+	t.Helper()
+
+	s := common.NewTextSource(expr)
+	p, err := parser.NewParser(parser.Macros(parser.AllMacros...))
+	if err != nil {
+		t.Fatalf("Failed to initialize parser: %v", err)
+	}
+	parsed, errs := p.Parse(s)
+	if len(errs.GetErrors()) != 0 {
+		t.Fatalf(`Failed to Parse expression "%s", error: %v`, expr, errs.GetErrors())
+	}
+	cont := containers.DefaultContainer
+	reg := newTestRegistry(t)
+	env := newTestEnv(t, cont, reg)
+	err = env.AddIdents(decls.NewVariable("l", types.NewListType(types.IntType)))
+	if err != nil {
+		t.Fatalf("Failed to initialize env: %v", err)
+	}
+	checked, errs := checker.Check(parsed, s, env)
+	if len(errs.GetErrors()) != 0 {
+		t.Fatalf(`Failed to check expression "%s", error: %v`, expr, errs.GetErrors())
+	}
+	costTracker, err := NewCostTracker(nil)
+	if err != nil {
+		t.Fatalf("NewCostTracker() failed: %v", err)
+	}
+	interp := newStandardInterpreter(t, cont, reg, reg, NewAttributeFactory(cont, reg, reg))
+	prg, err := interp.NewInterpretable(checked,
+		CostObserver(CostTrackerFactory(func() (*CostTracker, error) {
+			return costTracker, nil
+		})))
+	if err != nil {
+		t.Fatalf(`Failed to plan expression "%s", error: %v`, expr, err)
+	}
+	l := make([]int64, n)
+	for i := range l {
+		l[i] = int64(i)
+	}
+	prg.Exec(AsFrame(constructActivation(t, map[string]any{"l": l})))
+	return costTracker.stack.steps
 }
