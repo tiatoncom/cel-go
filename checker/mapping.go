@@ -15,11 +15,16 @@
 package checker
 
 import (
+	"strings"
+
 	"cel.dev/cel-go/common/types"
 )
 
 type mapping struct {
 	mapping map[string]*types.Type
+
+	// parens is whether any key has a parenthesis.
+	parens bool
 
 	// undo holds the bindings which add has replaced since the last call to begin.
 	undo []binding
@@ -39,11 +44,22 @@ func newMapping() *mapping {
 
 func (m *mapping) add(from, to *types.Type) {
 	key := FormatCELType(from)
+	if strings.Contains(key, "(") {
+		m.parens = true
+	}
 	m.undo = append(m.undo, binding{key: key, prev: m.mapping[key]})
 	m.mapping[key] = to
 }
 
 func (m *mapping) find(from *types.Type) (*types.Type, bool) {
+	// The formatted name of a type with parameters has a parenthesis. Unless a key has one, the
+	// type is not a key, and there is no need to format its parameters.
+	switch from.Kind() {
+	case types.ListKind, types.MapKind, types.OpaqueKind, types.TypeKind:
+		if len(from.Parameters()) != 0 && !m.parens {
+			return nil, false
+		}
+	}
 	if r, found := m.mapping[FormatCELType(from)]; found {
 		return r, found
 	}

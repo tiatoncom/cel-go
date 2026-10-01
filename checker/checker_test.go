@@ -3011,3 +3011,74 @@ func checkAllocatedBytes(t *testing.T, p *parser.Parser, env *Env, expr string) 
 	}
 	return after.TotalAlloc - before.TotalAlloc
 }
+
+// TestCheckAllocationsGrowQuadraticallyWithNestedTypes checks that the memory needed to type-check
+// an expression grows no faster than the square of the depth of the types in it.
+func TestCheckAllocationsGrowQuadraticallyWithNestedTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		expr func(n int) string
+	}{
+		{
+			name: "list of list chain",
+			expr: func(n int) string {
+				return "[1]" + strings.Repeat(".map(x, [x])", n)
+			},
+		},
+		{
+			name: "nested list literal",
+			expr: func(n int) string {
+				return strings.Repeat("[", n) + "1" + strings.Repeat("]", n)
+			},
+		},
+		{
+			name: "nested map literal",
+			expr: func(n int) string {
+				return strings.Repeat("{'a': ", n) + "1" + strings.Repeat("}", n)
+			},
+		},
+		{
+			name: "nested type",
+			expr: func(n int) string {
+				return strings.Repeat("type(", n) + "1" + strings.Repeat(")", n)
+			},
+		},
+		{
+			name: "nested abstract type",
+			expr: func(n int) string {
+				return strings.Repeat("box(", n) + "1" + strings.Repeat(")", n)
+			},
+		},
+		{
+			name: "nested list equality",
+			expr: func(n int) string {
+				l := strings.Repeat("[", n) + "1" + strings.Repeat("]", n)
+				return l + " == " + l
+			},
+		},
+	}
+	env, err := NewEnv(containers.DefaultContainer, newTestRegistry(t))
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+	env.AddFunctions(stdlib.Functions()...)
+	env.AddFunctions(testFunction(t, "box",
+		decls.Overload("box_T", []*types.Type{types.NewTypeParamType("T")},
+			types.NewOpaqueType("box", types.NewTypeParamType("T")))))
+	p, err := parser.NewParser(parser.Macros(parser.AllMacros...))
+	if err != nil {
+		t.Fatalf("parser.NewParser() failed: %v", err)
+	}
+	const n = 30
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			small := checkAllocatedBytes(t, p, env, tc.expr(n))
+			large := checkAllocatedBytes(t, p, env, tc.expr(4*n))
+			// Four times the depth should take at most sixteen times the memory.
+			if large > 24*small {
+				t.Errorf("got %d bytes for depth %d and %d bytes for depth %d, wanted a quadratic growth",
+					small, n, large, 4*n)
+			}
+		})
+	}
+}

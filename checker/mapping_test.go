@@ -117,3 +117,73 @@ func TestIsAssignableMappingRetry(t *testing.T) {
 		t.Errorf("find(T) got %v, wanted int", got)
 	}
 }
+
+func TestMappingFind(t *testing.T) {
+	intList := types.NewListType(types.IntType)
+	tests := []struct {
+		name string
+		// keys are the type parameters, and the types they are bound to.
+		keys map[*types.Type]*types.Type
+		from *types.Type
+		want *types.Type
+	}{
+		{
+			name: "type parameter",
+			keys: map[*types.Type]*types.Type{types.NewTypeParamType("T"): types.IntType},
+			from: types.NewTypeParamType("T"),
+			want: types.IntType,
+		},
+		{
+			name: "type with parameters",
+			keys: map[*types.Type]*types.Type{types.NewTypeParamType("T"): types.IntType},
+			from: types.NewListType(types.NewTypeParamType("T")),
+		},
+		{
+			name: "type with the name of a type parameter",
+			keys: map[*types.Type]*types.Type{types.NewTypeParamType("T"): types.IntType},
+			from: types.NewOpaqueType("T"),
+			want: types.IntType,
+		},
+		{
+			name: "type with the name of a type parameter with parentheses",
+			keys: map[*types.Type]*types.Type{types.NewTypeParamType("list(int)"): types.IntType},
+			from: intList,
+			want: types.IntType,
+		},
+		{
+			name: "type with parameters and a type parameter with parentheses",
+			keys: map[*types.Type]*types.Type{types.NewTypeParamType("list(int)"): types.IntType},
+			from: types.NewListType(types.StringType),
+		},
+		{
+			name: "function type",
+			keys: map[*types.Type]*types.Type{types.NewTypeParamType("(int) -> int"): types.IntType},
+			from: newFunctionType(types.IntType, types.IntType),
+			want: types.IntType,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMapping()
+			for from, to := range tc.keys {
+				m.add(from, to)
+			}
+			got, found := m.find(tc.from)
+			if found != (tc.want != nil) || (found && !got.IsExactType(tc.want)) {
+				t.Errorf("find(%v) got (%v, %v), wanted %v", tc.from, got, found, tc.want)
+			}
+		})
+	}
+}
+
+func TestMappingFindAfterRollback(t *testing.T) {
+	intList := types.NewListType(types.IntType)
+	m := newMapping()
+	m.add(types.NewTypeParamType("list(int)"), types.IntType)
+	m.begin()
+	m.add(types.NewTypeParamType("T(U)"), types.StringType)
+	m.rollback()
+	if got, found := m.find(intList); !found || !got.IsExactType(types.IntType) {
+		t.Errorf("find(%v) got (%v, %v), wanted int", intList, got, found)
+	}
+}
