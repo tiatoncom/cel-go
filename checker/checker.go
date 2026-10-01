@@ -37,6 +37,7 @@ type checker struct {
 	env                *Env
 	errors             *typeErrors
 	mappings           *mapping
+	typeSizeReported   bool
 	freeTypeVarCounter int
 }
 
@@ -60,12 +61,19 @@ func Check(parsed *ast.AST, source common.Source, env *Env) (*ast.AST, *common.E
 		mappings:           newMapping(),
 		freeTypeVarCounter: 0,
 	}
+	c.mappings.sizeLimit = env.maxTypeSize
 	c.check(c.Expr())
 
 	// Walk over the final type map substituting any type parameters either by their bound value
 	// or by DYN.
 	for id, t := range c.TypeMap() {
 		c.SetType(id, substitute(c.mappings, t, true))
+	}
+	// A type over the size limit says so once; setType has usually said it already, at the
+	// position of the node that was being typed when the limit tripped. This is the fallback
+	// for a trip that happens in this last walk, where nodes are typed by SetType.
+	if c.mappings.overSize && !c.typeSizeReported {
+		c.errors.typeTooLarge(c.Expr().ID(), c.location(c.Expr()), c.mappings.sizeLimit)
 	}
 	// Remove source info for IDs without a corresponding AST node. This can happen because
 	// check() deletes some nodes while rewriting the AST. For example the Select operand is
@@ -251,6 +259,9 @@ func (c *checker) checkSelectField(e, operand ast.Expr, field string, optional b
 
 	// If the target type was optional coming in, then the result must be optional going out.
 	if isOpt || optional {
+		if c.mappings.overTypeSize(resultType) {
+			return types.ErrorType
+		}
 		return types.NewOptionalType(resultType)
 	}
 	return resultType
@@ -382,15 +393,23 @@ func (c *checker) resolveOverload(
 			return newResolution(checkedRef, types.BoolType)
 		}
 
+		fnTypeParts := append([]*types.Type{overload.ResultType()}, overload.ArgTypes()...)
+		if c.mappings.overTypeSize(fnTypeParts...) {
+			return nil
+		}
 		overloadType := newFunctionType(overload.ResultType(), overload.ArgTypes()...)
 		typeParams := overload.TypeParams()
 		if len(typeParams) != 0 {
 			// Instantiate overload's type with fresh type variables.
 			substitutions := newMapping()
+			substitutions.sizeLimit = c.mappings.sizeLimit
 			for _, typePar := range typeParams {
 				substitutions.add(types.NewTypeParamType(typePar), c.newTypeVar())
 			}
 			overloadType = substitute(substitutions, overloadType, false)
+			if substitutions.overSize {
+				c.mappings.overSize = true
+			}
 		}
 
 		candidateArgTypes := overloadType.Parameters()[1:]
@@ -446,6 +465,10 @@ func (c *checker) checkCreateList(e ast.Expr) {
 		// If the list is empty, assign free type var to elem type.
 		elemsType = c.newTypeVar()
 	}
+	if c.mappings.overTypeSize(elemsType) {
+		c.setType(e, types.ErrorType)
+		return
+	}
 	c.setType(e, types.NewListType(elemsType))
 }
 
@@ -475,6 +498,10 @@ func (c *checker) checkCreateMap(e ast.Expr) {
 		// If the map is empty, assign free type variables to typeKey and value type.
 		mapKeyType = c.newTypeVar()
 		mapValueType = c.newTypeVar()
+	}
+	if c.mappings.overTypeSize(mapKeyType, mapValueType) {
+		c.setType(e, types.ErrorType)
+		return
 	}
 	c.setType(e, types.NewMapType(mapKeyType, mapValueType))
 }
@@ -657,7 +684,14 @@ func maybeUnwrapString(e ast.Expr) (string, bool) {
 	return "", false
 }
 
+// setType gives the expression its type, and is where a type refused for its size says so:
+// the first node typed after the refusal reports it, at its own position and before the
+// issues the refusal lets the rest of the expression produce (common.Errors keeps a hundred).
 func (c *checker) setType(e ast.Expr, t *types.Type) {
+	if c.mappings.overSize && !c.typeSizeReported {
+		c.typeSizeReported = true
+		c.errors.typeTooLarge(e.ID(), c.location(e), c.mappings.sizeLimit)
+	}
 	if old, found := c.TypeMap()[e.ID()]; found && !old.IsExactType(t) {
 		c.errors.incompatibleType(e.ID(), c.location(e), e, old, t)
 		return

@@ -75,6 +75,7 @@ type Env struct {
 	aggLitElemType      aggregateLiteralElementType
 	filteredOverloadIDs map[string]struct{}
 	jsonFieldNames      bool
+	maxTypeSize         int
 }
 
 // NewEnv returns a new *Env with the given parameters.
@@ -106,6 +107,7 @@ func NewEnv(container *containers.Container, provider types.Provider, opts ...Op
 		aggLitElemType:      aggLitElemType,
 		filteredOverloadIDs: filteredOverloadIDs,
 		jsonFieldNames:      envOptions.jsonFieldNames,
+		maxTypeSize:         envOptions.maxTypeSize,
 	}, nil
 }
 

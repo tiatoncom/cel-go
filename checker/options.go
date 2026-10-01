@@ -14,11 +14,14 @@
 
 package checker
 
+import "fmt"
+
 type options struct {
 	crossTypeNumericComparisons  bool
 	homogeneousAggregateLiterals bool
 	validatedDeclarations        *Scopes
 	jsonFieldNames               bool
+	maxTypeSize                  int
 }
 
 // Option is a functional option for configuring the type-checker
@@ -50,3 +53,18 @@ func JSONFieldNames(enabled bool) Option {
 	}
 }
 
+// MaxTypeSize bounds the unfolded size of a type the checker builds: the number of nodes of
+// the tree the type stands for, counted over the shared structure with memory (a child that
+// appears twice is walked once and counted twice), so that counting a type whose every level
+// doubles costs its shared structure, not the tree it unfolds to. A composite type that would
+// carry the count over n is not built: the expression reports one issue of its own and the
+// node takes the error type. n <= 0 disables the bound, which is the default.
+func MaxTypeSize(n int) Option {
+	return func(opts *options) error {
+		if n < 0 {
+			return fmt.Errorf("max type size cannot be negative: %d", n)
+		}
+		opts.maxTypeSize = n
+		return nil
+	}
+}

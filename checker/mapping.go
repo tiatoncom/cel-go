@@ -28,6 +28,13 @@ type mapping struct {
 
 	// undo holds the bindings which add has replaced since the last call to begin.
 	undo []binding
+
+	// sizeLimit, when positive, is options.MaxTypeSize for the check this mapping serves;
+	// overSize says a composite type was refused for it. sizeMemo caches the unfolded size
+	// of a type by the type itself, shared by every count of the check.
+	sizeLimit int
+	overSize  bool
+	sizeMemo  map[*types.Type]int
 }
 
 // binding is the type, if any, which a key mapped to before it was set.

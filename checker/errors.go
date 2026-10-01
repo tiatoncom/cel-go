@@ -75,6 +75,11 @@ func (e *typeErrors) typeMismatch(id int64, l common.Location, expected, actual 
 		FormatCELType(expected), FormatCELType(actual))
 }
 
+func (e *typeErrors) typeTooLarge(id int64, l common.Location, limit int) {
+	e.errs.ReportErrorAtID(id, l,
+		"the type of the expression is larger than the checker reads (%d nodes)", limit)
+}
+
 func (e *typeErrors) undefinedField(id int64, l common.Location, field string) {
 	e.errs.ReportErrorAtID(id, l, "undefined field '%s'", field)
 }

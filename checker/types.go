@@ -276,6 +276,52 @@ func notReferencedIn(m *mapping, t, withinType *types.Type) bool {
 	}
 }
 
+// typeSize is the number of nodes of the tree t unfolds to, read over the shared structure
+// with memory: a child that appears in two places is walked once and its count added twice,
+// so the count of a type whose every level doubles costs its levels, not the tree. It
+// saturates at sizeLimit+1: the count of a type over the limit is "over the limit", not a
+// number.
+func (m *mapping) typeSize(t *types.Type) int {
+	if t == nil {
+		return 0
+	}
+	if m.sizeMemo == nil {
+		m.sizeMemo = make(map[*types.Type]int)
+	}
+	if v, ok := m.sizeMemo[t]; ok {
+		return v
+	}
+	v := 1
+	for _, p := range t.Parameters() {
+		v += m.typeSize(p)
+		if v > m.sizeLimit {
+			m.sizeMemo[t] = m.sizeLimit + 1
+			return m.sizeLimit + 1
+		}
+	}
+	m.sizeMemo[t] = v
+	return v
+}
+
+// overTypeSize reports whether a composite holding the given parts would carry the unfolded
+// size of a type over the limit of the check, and marks the mapping refused for it. The parts
+// are built types, each within the limit on its own; it is the composite that may not be.
+// Without a limit it never refuses: the checker builds what it built before the option.
+func (m *mapping) overTypeSize(parts ...*types.Type) bool {
+	if m.sizeLimit <= 0 {
+		return false
+	}
+	v := 1
+	for _, p := range parts {
+		v += m.typeSize(p)
+		if v > m.sizeLimit {
+			m.overSize = true
+			return true
+		}
+	}
+	return false
+}
+
 // substitute replaces all direct and indirect occurrences of bound type parameters. Unbound type
 // parameters are replaced by DYN if typeParamToDyn is true.
 func substitute(m *mapping, t *types.Type, typeParamToDyn bool) *types.Type {
@@ -288,16 +334,31 @@ func substitute(m *mapping, t *types.Type, typeParamToDyn bool) *types.Type {
 	}
 	switch kind {
 	case types.OpaqueKind:
-		return types.NewOpaqueType(t.TypeName(), substituteParams(m, t.Parameters(), typeParamToDyn)...)
+		subParams := substituteParams(m, t.Parameters(), typeParamToDyn)
+		if m.overTypeSize(subParams...) {
+			return types.ErrorType
+		}
+		return types.NewOpaqueType(t.TypeName(), subParams...)
 	case types.ListKind:
-		return types.NewListType(substitute(m, t.Parameters()[0], typeParamToDyn))
+		elem := substitute(m, t.Parameters()[0], typeParamToDyn)
+		if m.overTypeSize(elem) {
+			return types.ErrorType
+		}
+		return types.NewListType(elem)
 	case types.MapKind:
-		return types.NewMapType(substitute(m, t.Parameters()[0], typeParamToDyn),
-			substitute(m, t.Parameters()[1], typeParamToDyn))
+		key := substitute(m, t.Parameters()[0], typeParamToDyn)
+		value := substitute(m, t.Parameters()[1], typeParamToDyn)
+		if m.overTypeSize(key, value) {
+			return types.ErrorType
+		}
+		return types.NewMapType(key, value)
 	case types.TypeKind:
 		if len(t.Parameters()) > 0 {
-			tParam := t.Parameters()[0]
-			return types.NewTypeTypeWithParam(substitute(m, tParam, typeParamToDyn))
+			tParam := substitute(m, t.Parameters()[0], typeParamToDyn)
+			if m.overTypeSize(tParam) {
+				return types.ErrorType
+			}
+			return types.NewTypeTypeWithParam(tParam)
 		}
 		return t
 	default:
