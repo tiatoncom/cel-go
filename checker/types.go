@@ -219,22 +219,26 @@ func isLegacyNullable(t *types.Type) bool {
 	return false
 }
 
-// isAssignable returns an updated type substitution mapping if t1 is assignable to t2.
-func isAssignable(m *mapping, t1, t2 *types.Type) *mapping {
-	mCopy := m.copy()
-	if internalIsAssignable(mCopy, t1, t2) {
-		return mCopy
+// isAssignable returns whether t1 is assignable to t2, in which case the type substitutions
+// which make it so are added to the mapping. The mapping is left as it was otherwise.
+func isAssignable(m *mapping, t1, t2 *types.Type) bool {
+	m.begin()
+	if internalIsAssignable(m, t1, t2) {
+		return true
 	}
-	return nil
+	m.rollback()
+	return false
 }
 
-// isAssignableList returns an updated type substitution mapping if l1 is assignable to l2.
-func isAssignableList(m *mapping, l1, l2 []*types.Type) *mapping {
-	mCopy := m.copy()
-	if internalIsAssignableList(mCopy, l1, l2) {
-		return mCopy
+// isAssignableList returns whether l1 is assignable to l2, with the same effect on the mapping as
+// isAssignable.
+func isAssignableList(m *mapping, l1, l2 []*types.Type) bool {
+	m.begin()
+	if internalIsAssignableList(m, l1, l2) {
+		return true
 	}
-	return nil
+	m.rollback()
+	return false
 }
 
 // mostGeneral returns the more general of two types which are known to unify.

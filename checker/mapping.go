@@ -20,6 +20,15 @@ import (
 
 type mapping struct {
 	mapping map[string]*types.Type
+
+	// undo holds the bindings which add has replaced since the last call to begin.
+	undo []binding
+}
+
+// binding is the type, if any, which a key mapped to before it was set.
+type binding struct {
+	key  string
+	prev *types.Type
 }
 
 func newMapping() *mapping {
@@ -29,7 +38,9 @@ func newMapping() *mapping {
 }
 
 func (m *mapping) add(from, to *types.Type) {
-	m.mapping[FormatCELType(from)] = to
+	key := FormatCELType(from)
+	m.undo = append(m.undo, binding{key: key, prev: m.mapping[key]})
+	m.mapping[key] = to
 }
 
 func (m *mapping) find(from *types.Type) (*types.Type, bool) {
@@ -39,11 +50,20 @@ func (m *mapping) find(from *types.Type) (*types.Type, bool) {
 	return nil, false
 }
 
-func (m *mapping) copy() *mapping {
-	c := newMapping()
+// begin starts recording the additions to the mapping so that they can be undone.
+func (m *mapping) begin() {
+	m.undo = m.undo[:0]
+}
 
-	for k, v := range m.mapping {
-		c.mapping[k] = v
+// rollback reverts the additions made since the last call to begin.
+func (m *mapping) rollback() {
+	for i := len(m.undo) - 1; i >= 0; i-- {
+		b := m.undo[i]
+		if b.prev == nil {
+			delete(m.mapping, b.key)
+		} else {
+			m.mapping[b.key] = b.prev
+		}
 	}
-	return c
+	m.undo = m.undo[:0]
 }

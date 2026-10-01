@@ -16,6 +16,7 @@ package checker
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2449,6 +2450,19 @@ _&&_(_==_(list~type(list(dyn))^list,
              | TestAllTypes{singleInt32: 1, single_bool: true}.singleInt32
              | ........................................^`,
 		},
+		{
+			// The first overload binds the type variable of the empty list before the second argument
+			// rules it out, and the binding must not outlive the attempt.
+			in: `fn([], 'a')`,
+			env: testEnv{
+				functions: []*decls.FunctionDecl{
+					testFunction(t, "fn",
+						decls.Overload("fn_int", []*types.Type{types.NewListType(types.IntType), types.IntType}, types.BoolType),
+						decls.Overload("fn_string", []*types.Type{types.NewListType(types.StringType), types.StringType}, types.BoolType)),
+				},
+			},
+			outType: types.BoolType,
+		},
 	}
 }
 
@@ -2916,4 +2930,84 @@ func TestVarsInheritance(t *testing.T) {
 	if !gotType.IsExactType(wantType) {
 		t.Errorf("got result type %v, wanted %v", gotType, wantType)
 	}
+}
+
+// TestCheckAllocationsGrowLinearly checks that the memory needed to type-check a chain of calls
+// with type variables grows linearly with the length of the chain.
+func TestCheckAllocationsGrowLinearly(t *testing.T) {
+	tests := []struct {
+		name string
+		n    int
+		expr func(n int) string
+	}{
+		{
+			name: "inequality chain",
+			n:    200,
+			expr: func(n int) string {
+				return strings.Repeat("x != 1 && ", n) + "true"
+			},
+		},
+		{
+			name: "membership chain",
+			n:    200,
+			expr: func(n int) string {
+				return strings.Repeat("x in l && ", n) + "true"
+			},
+		},
+		{
+			name: "macro chain",
+			n:    15,
+			expr: func(n int) string {
+				return "l" + strings.Repeat(".map(i, i + 1).filter(i, i > 0)", n)
+			},
+		},
+		{
+			name: "nested macros",
+			n:    30,
+			expr: func(n int) string {
+				return "l" + strings.Repeat(".map(i, [i].map(j, j + 1)[0])", n)
+			},
+		},
+	}
+	env, err := NewEnv(containers.DefaultContainer, newTestRegistry(t))
+	if err != nil {
+		t.Fatalf("NewEnv() failed: %v", err)
+	}
+	env.AddFunctions(stdlib.Functions()...)
+	env.AddIdents(
+		decls.NewVariable("x", types.IntType),
+		decls.NewVariable("l", types.NewListType(types.IntType)))
+	p, err := parser.NewParser(parser.Macros(parser.AllMacros...))
+	if err != nil {
+		t.Fatalf("parser.NewParser() failed: %v", err)
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			small := checkAllocatedBytes(t, p, env, tc.expr(tc.n))
+			large := checkAllocatedBytes(t, p, env, tc.expr(4*tc.n))
+			// Four times the repetitions should take four times the memory.
+			if large > 8*small {
+				t.Errorf("got %d bytes for %d repetitions and %d bytes for %d repetitions, wanted a linear growth",
+					small, tc.n, large, 4*tc.n)
+			}
+		})
+	}
+}
+
+// checkAllocatedBytes returns the number of bytes allocated to type-check expr.
+func checkAllocatedBytes(t *testing.T, p *parser.Parser, env *Env, expr string) uint64 {
+	t.Helper()
+	src := common.NewTextSource(expr)
+	parsed, errs := p.Parse(src)
+	if len(errs.GetErrors()) > 0 {
+		t.Fatalf("Parse() failed: %v", errs.ToDisplayString())
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, errs = Check(parsed, src, env)
+	runtime.ReadMemStats(&after)
+	if len(errs.GetErrors()) > 0 {
+		t.Fatalf("Check() failed: %v", errs.ToDisplayString())
+	}
+	return after.TotalAlloc - before.TotalAlloc
 }
