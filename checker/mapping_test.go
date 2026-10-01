@@ -187,3 +187,13 @@ func TestMappingFindAfterRollback(t *testing.T) {
 		t.Errorf("find(%v) got (%v, %v), wanted int", intList, got, found)
 	}
 }
+
+func TestMappingFindAfterKeyWithoutParens(t *testing.T) {
+	intList := types.NewListType(types.IntType)
+	m := newMapping()
+	m.add(types.NewTypeParamType("T"), types.StringType)
+	m.add(types.NewTypeParamType("list(int)"), types.IntType)
+	if got, found := m.find(intList); !found || !got.IsExactType(types.IntType) {
+		t.Errorf("find(%v) got (%v, %v), wanted int", intList, got, found)
+	}
+}

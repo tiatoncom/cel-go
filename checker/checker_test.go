@@ -2463,6 +2463,18 @@ _&&_(_==_(list~type(list(dyn))^list,
 			},
 			outType: types.BoolType,
 		},
+		{
+			// Joining the types of the elements binds the type variable of the empty list.
+			in:      `[[], [1]]`,
+			out:     `[[]~list(int), [1~int]~list(int)]~list(list(int))`,
+			outType: types.NewListType(types.NewListType(types.IntType)),
+		},
+		{
+			// An operand of a logical operator binds the type variable of the empty list.
+			in:      `[][0] && true`,
+			out:     `_&&_(_[_]([]~list(bool), 0~int)~bool^index_list, true~bool)~bool^logical_and`,
+			outType: types.BoolType,
+		},
 	}
 }
 
